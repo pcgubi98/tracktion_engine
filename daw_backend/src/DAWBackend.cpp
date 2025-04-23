@@ -84,11 +84,15 @@ DAWBackend::DAWBackend()
     } catch (...) {
         DAWLogger::getInstance().log("Unknown error adding OSC listener");
     }
+
+    // Start position update timer (50ms interval)
+    startTimer(50);
 }
 
 DAWBackend::~DAWBackend()
 {
     DAWLogger::getInstance().log("Shutting down DAWBackend");
+    stopTimer();
     if (currentEdit != nullptr) {
         te::EditFileOperations(*currentEdit).save(true, true, false);
         DAWLogger::getInstance().log("Edit saved");
@@ -311,4 +315,37 @@ void DAWBackend::changeListenerCallback(juce::ChangeBroadcaster* source)
         // Handle transport state changes
         DAWLogger::getInstance().log("Transport state changed");
     }
+}
+
+void DAWBackend::sendPositionUpdate()
+{
+    if (currentEdit != nullptr) {
+        auto timePosition = currentEdit->getTransport().getPosition();
+        auto beatPosition = currentEdit->tempoSequence.toBeats(timePosition);
+        
+        // Only send if position has changed
+        if (timePosition.inSeconds() != lastSentTimePosition || 
+            beatPosition.inBeats() != lastSentBeatPosition) {
+            
+            // Send both time and beat positions
+            oscSender.send("/daw/position/update", 
+                juce::OSCArgument(static_cast<float>(timePosition.inSeconds())),  // Time in seconds
+                juce::OSCArgument(static_cast<float>(beatPosition.inBeats()))     // Position in beats
+            );
+            
+            // Update last sent positions
+            lastSentTimePosition = timePosition.inSeconds();
+            lastSentBeatPosition = beatPosition.inBeats();
+            
+            DAWLogger::getInstance().log("Position update - Time: " + 
+                std::to_string(timePosition.inSeconds()) + 
+                "s, Beats: " + 
+                std::to_string(beatPosition.inBeats()));
+        }
+    }
+}
+
+void DAWBackend::timerCallback()
+{
+    sendPositionUpdate();
 } 

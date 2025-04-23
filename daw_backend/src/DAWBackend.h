@@ -6,7 +6,8 @@
 namespace te = tracktion::engine;
 
 class DAWBackend : public juce::OSCReceiver::Listener<juce::OSCReceiver::MessageLoopCallback>,
-                  public juce::ChangeListener
+                  public juce::ChangeListener,
+                  public juce::Timer
 {
 public:
     DAWBackend();
@@ -31,6 +32,7 @@ public:
     // OSC message handling
     void oscMessageReceived(const juce::OSCMessage& message) override;
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
+    void timerCallback() override;
 
 private:
     te::Engine engine;
@@ -41,6 +43,11 @@ private:
 
     // Helper method to send OSC responses
     void sendOSCResponse(const juce::String& address, const juce::OSCArgument& arg);
+    void sendPositionUpdate();
+
+    // Store last sent position
+    double lastSentTimePosition = -1.0;
+    double lastSentBeatPosition = -1.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DAWBackend)
 }; 
