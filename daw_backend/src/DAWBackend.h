@@ -36,7 +36,11 @@ private:
     te::Engine engine;
     te::DeviceManager& deviceManager;
     juce::OSCReceiver oscReceiver;
+    juce::OSCSender oscSender;
     std::unique_ptr<te::Edit> currentEdit;
+
+    // Helper method to send OSC responses
+    void sendOSCResponse(const juce::String& address, const juce::OSCArgument& arg);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DAWBackend)
 }; 

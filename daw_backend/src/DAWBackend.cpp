@@ -40,7 +40,8 @@ private:
 DAWBackend::DAWBackend()
     : engine("DAWBackend"),
       deviceManager(engine.getDeviceManager()),
-      oscReceiver()
+      oscReceiver(),
+      oscSender()
 {
     DAWLogger::getInstance().log("Initializing DAWBackend");
     
@@ -49,16 +50,33 @@ DAWBackend::DAWBackend()
     DAWLogger::getInstance().log("Audio device initialized");
     
     // Initialize OSC receiver
-    if (!oscReceiver.connect(9001)) {
-        DAWLogger::getInstance().log("Error: Could not connect to port 9001");
+    if (!oscReceiver.connect(9000)) {
+        DAWLogger::getInstance().log("Error: Could not connect to port 9000");
     } else {
-        DAWLogger::getInstance().log("OSC receiver connected to port 9001");
+        DAWLogger::getInstance().log("OSC receiver connected to port 9000");
+    }
+    
+    // Initialize OSC sender
+    if (!oscSender.connect("127.0.0.1", 9001)) {
+        DAWLogger::getInstance().log("Error: Could not connect OSC sender to port 9001");
+    } else {
+        DAWLogger::getInstance().log("OSC sender connected to port 9001");
     }
     
     // Add OSC message handler
     try {
         oscReceiver.addListener(this);
         DAWLogger::getInstance().log("OSC listener added for all messages");
+        
+        // Add format error handler to log any malformed messages
+        oscReceiver.registerFormatErrorHandler([](const char* data, int dataSize) {
+            std::stringstream ss;
+            ss << "OSC Format Error - Raw data: ";
+            for (int i = 0; i < dataSize; ++i) {
+                ss << std::hex << std::setw(2) << std::setfill('0') << (int)(unsigned char)data[i] << " ";
+            }
+            DAWLogger::getInstance().log(ss.str());
+        });
     } catch (const juce::OSCFormatError& e) {
         DAWLogger::getInstance().log("OSC Format Error in addListener: " + std::string(e.what()));
     } catch (const std::exception& e) {
@@ -222,6 +240,12 @@ bool DAWBackend::addClipToTrack(int trackIndex, const juce::File& file, double s
     return clip != nullptr;
 }
 
+void DAWBackend::sendOSCResponse(const juce::String& address, const juce::OSCArgument& arg)
+{
+    oscSender.send(address, arg);
+    DAWLogger::getInstance().log("Sent OSC response: " + address.toStdString());
+}
+
 void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
 {
     try {
@@ -243,25 +267,31 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
         if (message.getAddressPattern() == "/daw/init") {
             DAWLogger::getInstance().log("Initializing new edit");
             createNewEdit();
+            sendOSCResponse("/daw/init/response", juce::OSCArgument(1)); // Send success response
         }
         else if (message.getAddressPattern() == "/daw/play") {
             DAWLogger::getInstance().log("Play command received");
             play();
+            sendOSCResponse("/daw/play/response", juce::OSCArgument(1)); // Send success response
         }
         else if (message.getAddressPattern() == "/daw/pause") {
             DAWLogger::getInstance().log("Pause command received");
             stop(); // Using stop for pause since we don't have a separate pause function
+            sendOSCResponse("/daw/pause/response", juce::OSCArgument(1)); // Send success response
         }
         else if (message.getAddressPattern() == "/daw/stop") {
             DAWLogger::getInstance().log("Stop command received");
             stop();
+            sendOSCResponse("/daw/stop/response", juce::OSCArgument(1)); // Send success response
         }
         else if (message.getAddressPattern() == "/daw/position") {
             if (message.size() == 1 && message[0].isFloat32()) {
                 DAWLogger::getInstance().log("Position command received: " + std::to_string(message[0].getFloat32()));
                 setPosition(message[0].getFloat32());
+                sendOSCResponse("/daw/position/response", juce::OSCArgument(1)); // Send success response
             } else {
                 DAWLogger::getInstance().log("Error: Invalid position message format");
+                sendOSCResponse("/daw/position/response", juce::OSCArgument(0)); // Send error response
             }
         } else {
             DAWLogger::getInstance().log("Warning: Unknown OSC message pattern: " + message.getAddressPattern().toString().toStdString());
