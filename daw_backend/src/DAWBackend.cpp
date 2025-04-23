@@ -322,25 +322,43 @@ void DAWBackend::sendPositionUpdate()
     if (currentEdit != nullptr) {
         auto timePosition = currentEdit->getTransport().getPosition();
         auto beatPosition = currentEdit->tempoSequence.toBeats(timePosition);
+        auto currentBPM = currentEdit->tempoSequence.getTempoAt(timePosition).getBpm();
         
-        // Only send if position has changed
-        if (timePosition.inSeconds() != lastSentTimePosition || 
-            beatPosition.inBeats() != lastSentBeatPosition) {
+        bool positionChanged = timePosition.inSeconds() != lastSentTimePosition || 
+                             beatPosition.inBeats() != lastSentBeatPosition;
+        bool bpmChanged = currentBPM != lastSentBPM;
+        
+        // Only send if position or BPM has changed
+        if (positionChanged || bpmChanged) {
+            // Send position updates if changed
+            if (positionChanged) {
+                oscSender.send("/daw/position/update", 
+                    juce::OSCArgument(static_cast<float>(timePosition.inSeconds())),  // Time in seconds
+                    juce::OSCArgument(static_cast<float>(beatPosition.inBeats()))     // Position in beats
+                );
+                
+                // Update last sent positions
+                lastSentTimePosition = timePosition.inSeconds();
+                lastSentBeatPosition = beatPosition.inBeats();
+                
+                DAWLogger::getInstance().log("Position update - Time: " + 
+                    std::to_string(timePosition.inSeconds()) + 
+                    "s, Beats: " + 
+                    std::to_string(beatPosition.inBeats()));
+            }
             
-            // Send both time and beat positions
-            oscSender.send("/daw/position/update", 
-                juce::OSCArgument(static_cast<float>(timePosition.inSeconds())),  // Time in seconds
-                juce::OSCArgument(static_cast<float>(beatPosition.inBeats()))     // Position in beats
-            );
-            
-            // Update last sent positions
-            lastSentTimePosition = timePosition.inSeconds();
-            lastSentBeatPosition = beatPosition.inBeats();
-            
-            DAWLogger::getInstance().log("Position update - Time: " + 
-                std::to_string(timePosition.inSeconds()) + 
-                "s, Beats: " + 
-                std::to_string(beatPosition.inBeats()));
+            // Send BPM update if changed
+            if (bpmChanged) {
+                oscSender.send("/daw/bpm/update", 
+                    juce::OSCArgument(static_cast<float>(currentBPM))
+                );
+                
+                // Update last sent BPM
+                lastSentBPM = currentBPM;
+                
+                DAWLogger::getInstance().log("BPM update - " + 
+                    std::to_string(currentBPM) + " BPM");
+            }
         }
     }
 }
