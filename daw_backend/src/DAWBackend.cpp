@@ -297,9 +297,80 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
                 DAWLogger::getInstance().log("Error: Invalid position message format");
                 sendOSCResponse("/daw/position/response", juce::OSCArgument(0)); // Send error response
             }
+        }
+        else if (message.getAddressPattern() == "/daw/bpm/set") {
+            if (message.size() == 1 && message[0].isFloat32()) {
+                float newBPM = message[0].getFloat32();
+                DAWLogger::getInstance().log("BPM set command received: " + std::to_string(newBPM));
+                
+                if (currentEdit != nullptr) {
+                    // Log current transport state
+                    auto& transport = currentEdit->getTransport();
+                    DAWLogger::getInstance().log("Current transport state - Playing: " + 
+                        std::to_string(transport.isPlaying()) + 
+                        ", Position: " + std::to_string(transport.getPosition().inSeconds()) + 
+                        "s, Loop range: " + std::to_string(transport.getLoopRange().getStart().inSeconds()) + 
+                        "s to " + std::to_string(transport.getLoopRange().getEnd().inSeconds()) + "s");
+
+                    // Remove all existing tempo changes
+                    int numTempos = currentEdit->tempoSequence.getNumTempos();
+                    DAWLogger::getInstance().log("Removing " + std::to_string(numTempos) + " existing tempo changes");
+                    
+                    // Safety check - if there are too many tempos, something might be wrong
+                    if (numTempos > 100) {
+                        DAWLogger::getInstance().log("Warning: Suspicious number of tempo changes (" + std::to_string(numTempos) + "), skipping removal");
+                    } else {
+                        int removedCount = 0;
+                        while (currentEdit->tempoSequence.getNumTempos() > 0 && removedCount < numTempos) {
+                            currentEdit->tempoSequence.removeTempo(0, false);
+                            removedCount++;
+                            DAWLogger::getInstance().log("Removed tempo " + std::to_string(removedCount) + " of " + std::to_string(numTempos));
+                        }
+                        if (removedCount < numTempos) {
+                            DAWLogger::getInstance().log("Warning: Could not remove all tempo changes");
+                        }
+                    }
+                    
+                    // Insert a single tempo change at the start
+                    if (auto tempo = currentEdit->tempoSequence.insertTempo(tracktion::TimePosition())) {
+                        tempo->setBpm(newBPM);
+                        // Update the tempo sequence to apply the changes
+                        currentEdit->tempoSequence.updateTempoData();
+                        DAWLogger::getInstance().log("BPM set to " + std::to_string(newBPM));
+                        
+                        // Log new transport state
+                        DAWLogger::getInstance().log("New transport state - Playing: " + 
+                            std::to_string(transport.isPlaying()) + 
+                            ", Position: " + std::to_string(transport.getPosition().inSeconds()) + 
+                            "s, Loop range: " + std::to_string(transport.getLoopRange().getStart().inSeconds()) + 
+                            "s to " + std::to_string(transport.getLoopRange().getEnd().inSeconds()) + "s");
+                        
+                        // If transport was playing, restart it
+                        if (transport.isPlaying()) {
+                            DAWLogger::getInstance().log("Restarting transport after BPM change");
+                            transport.stop(false, false);
+                            transport.play(false);
+                        }
+                        
+                        sendOSCResponse("/daw/bpm/set/response", juce::OSCArgument(1)); // Send success response
+                    } else {
+                        DAWLogger::getInstance().log("Error: Failed to set tempo");
+                        sendOSCResponse("/daw/bpm/set/response", juce::OSCArgument(0)); // Send error response
+                    }
+                } else {
+                    DAWLogger::getInstance().log("Error: No edit loaded");
+                    sendOSCResponse("/daw/bpm/set/response", juce::OSCArgument(0)); // Send error response
+                }
+            } else {
+                DAWLogger::getInstance().log("Error: Invalid BPM message format");
+                sendOSCResponse("/daw/bpm/set/response", juce::OSCArgument(0)); // Send error response
+            }
         } else {
             DAWLogger::getInstance().log("Warning: Unknown OSC message pattern: " + message.getAddressPattern().toString().toStdString());
         }
+        
+        // Log that we've finished processing this message
+        DAWLogger::getInstance().log("Finished processing OSC message: " + message.getAddressPattern().toString().toStdString());
     } catch (const juce::OSCFormatError& e) {
         DAWLogger::getInstance().log("OSC Format Error: " + std::string(e.what()));
     } catch (const std::exception& e) {
