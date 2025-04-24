@@ -3,6 +3,10 @@
 #include <fstream>
 #include <chrono>
 #include <iomanip>
+#include <cmath>
+
+// Small epsilon value for floating-point comparisons
+constexpr double EPSILON = 0.000001;
 
 class DAWLogger {
 public:
@@ -426,10 +430,15 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
             DAWLogger::getInstance().log("Add track command received");
             
             // Check if a frontend ID was provided
-            int frontendId = -1;
-            if (message.size() >= 1 && message[0].isInt32()) {
-                frontendId = message[0].getInt32();
-                DAWLogger::getInstance().log("Frontend ID provided: " + std::to_string(frontendId));
+            juce::String frontendId;
+            if (message.size() >= 1) {
+                if (message[0].isString()) {
+                    frontendId = message[0].getString();
+                    DAWLogger::getInstance().log("Frontend ID provided as string: " + frontendId.toStdString());
+                } else if (message[0].isInt32()) {
+                    frontendId = juce::String(message[0].getInt32());
+                    DAWLogger::getInstance().log("Frontend ID provided as integer: " + frontendId.toStdString());
+                }
             }
             
             if (currentEdit != nullptr) {
@@ -439,20 +448,20 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
                     int trackId = getTrackId(track);
                     
                     // Store the frontend ID if provided
-                    if (frontendId >= 0) {
+                    if (frontendId.isNotEmpty()) {
                         frontendIdMap[trackId] = frontendId;
-                        DAWLogger::getInstance().log("Associated frontend ID " + std::to_string(frontendId) + 
+                        DAWLogger::getInstance().log("Associated frontend ID " + frontendId.toStdString() + 
                                                     " with backend ID " + std::to_string(trackId));
                     }
                     
                     DAWLogger::getInstance().log("Track added successfully, Backend ID: " + std::to_string(trackId) + 
-                                                ", Frontend ID: " + std::to_string(frontendId));
+                                                ", Frontend ID: " + frontendId.toStdString());
                     
                     // Create a response with both IDs
                     juce::OSCMessage response("/daw/track/add/response");
                     response.addInt32(1); // Success
                     response.addInt32(trackId); // Backend track ID
-                    response.addInt32(frontendId); // Frontend ID (as provided)
+                    response.addString(frontendId); // Frontend ID (as string)
                     
                     oscSender.send(response);
                     DAWLogger::getInstance().log("Sent track add response with backend and frontend IDs");
@@ -470,30 +479,30 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
                 int trackId = message[0].getInt32();
                 
                 // Check if a frontend ID was also provided
-                int frontendId = -1;
-                if (message.size() >= 2 && message[1].isInt32()) {
-                    frontendId = message[1].getInt32();
+                juce::String frontendId;
+                if (message.size() >= 2 && message[1].isString()) {
+                    frontendId = message[1].getString();
                 }
                 
                 DAWLogger::getInstance().log("Remove track command received, Backend ID: " + std::to_string(trackId) + 
-                                          ", Frontend ID: " + std::to_string(frontendId));
+                                          ", Frontend ID: " + frontendId.toStdString());
                 
                 if (currentEdit != nullptr) {
                     auto track = getTrackById(trackId);
                     if (track != nullptr) {
                         // Remove the track
-                        currentEdit->deleteTrack(track);
+                        currentEdit->deleteTrack(track.get());
                         // Remove from our ID maps
                         trackIdMap.erase(track);
                         frontendIdMap.erase(trackId);
                         DAWLogger::getInstance().log("Track removed successfully, Backend ID: " + std::to_string(trackId) + 
-                                                   ", Frontend ID: " + std::to_string(frontendId));
+                                                   ", Frontend ID: " + frontendId.toStdString());
                         
                         // Create a response with both IDs
                         juce::OSCMessage response("/daw/track/remove/response");
                         response.addInt32(1); // Success
                         response.addInt32(trackId); // Backend track ID
-                        response.addInt32(frontendId); // Frontend ID (as provided)
+                        response.addString(frontendId); // Frontend ID (as string)
                         
                         oscSender.send(response);
                         DAWLogger::getInstance().log("Sent track remove response with backend and frontend IDs");
@@ -530,20 +539,20 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
                 for (int i = 0; i < tracks.size(); ++i) {
                     auto track = tracks[i];
                     int trackId = getTrackId(track);
-                    int associatedFrontendId = getFrontendId(trackId);
+                    juce::String associatedFrontendId = getFrontendId(trackId);
                     
                     juce::OSCMessage trackInfo("/daw/track/info");
                     trackInfo.addInt32(trackId); // Track ID
                     trackInfo.addInt32(i); // Track index (position)
                     trackInfo.addString(track->getName()); // Track name
-                    trackInfo.addInt32(associatedFrontendId); // Frontend ID (-1 if not associated)
+                    trackInfo.addString(associatedFrontendId); // Frontend ID (empty string if not associated)
                     
                     oscSender.send(trackInfo);
                     
                     DAWLogger::getInstance().log("Track info - Backend ID: " + std::to_string(trackId) + 
                                                ", Index: " + std::to_string(i) + 
                                                ", Name: " + track->getName().toStdString() + 
-                                               ", Frontend ID: " + std::to_string(associatedFrontendId));
+                                               ", Frontend ID: " + associatedFrontendId.toStdString());
                 }
             } else {
                 DAWLogger::getInstance().log("Error: No edit loaded");
@@ -610,9 +619,9 @@ void DAWBackend::sendPositionUpdate()
         auto beatPosition = currentEdit->tempoSequence.toBeats(timePosition);
         auto currentBPM = currentEdit->tempoSequence.getTempoAt(timePosition).getBpm();
         
-        bool positionChanged = timePosition.inSeconds() != lastSentTimePosition || 
-                             beatPosition.inBeats() != lastSentBeatPosition;
-        bool bpmChanged = currentBPM != lastSentBPM;
+        bool positionChanged = std::abs(timePosition.inSeconds() - lastSentTimePosition) > EPSILON || 
+                             std::abs(beatPosition.inBeats() - lastSentBeatPosition) > EPSILON;
+        bool bpmChanged = std::abs(currentBPM - lastSentBPM) > EPSILON;
         
         // Only send if position or BPM has changed
         if (positionChanged || bpmChanged) {

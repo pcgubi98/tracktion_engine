@@ -5,8 +5,16 @@
 
 namespace te = tracktion::engine;
 
+// Custom comparator for ReferenceCountedObjectPtr
+struct TrackPtrComparator {
+    bool operator()(const juce::ReferenceCountedObjectPtr<te::AudioTrack>& a,
+                   const juce::ReferenceCountedObjectPtr<te::AudioTrack>& b) const {
+        return a.get() < b.get();
+    }
+};
+
 class DAWBackend : public juce::OSCReceiver::Listener<juce::OSCReceiver::MessageLoopCallback>,
-                  public juce::ChangeListener,`
+                  public juce::ChangeListener,
                   public juce::Timer
 {
 public:
@@ -53,11 +61,11 @@ private:
 
     // Track ID management
     int nextTrackId = 1;
-    std::map<juce::ReferenceCountedObjectPtr<te::AudioTrack>, int> trackIdMap;
-    std::map<int, int> frontendIdMap; // Maps backend track IDs to frontend IDs
+    std::map<juce::ReferenceCountedObjectPtr<te::AudioTrack>, int, TrackPtrComparator> trackIdMap;
+    std::map<int, juce::String> frontendIdMap; // Maps backend track IDs to frontend IDs (as strings)
     int getTrackId(juce::ReferenceCountedObjectPtr<te::AudioTrack> track);
     juce::ReferenceCountedObjectPtr<te::AudioTrack> getTrackById(int id);
-    int getFrontendId(int backendId) { return frontendIdMap.count(backendId) ? frontendIdMap[backendId] : -1; }
+    juce::String getFrontendId(int backendId) { return frontendIdMap.count(backendId) ? frontendIdMap[backendId] : juce::String(); }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DAWBackend)
 }; 
