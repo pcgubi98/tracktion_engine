@@ -200,6 +200,25 @@ double DAWBackend::getPosition()
     return 0.0;
 }
 
+int DAWBackend::getTrackId(juce::ReferenceCountedObjectPtr<te::AudioTrack> track)
+{
+    if (trackIdMap.find(track) == trackIdMap.end()) {
+        // Assign a new ID
+        trackIdMap[track] = nextTrackId++;
+    }
+    return trackIdMap[track];
+}
+
+juce::ReferenceCountedObjectPtr<te::AudioTrack> DAWBackend::getTrackById(int id)
+{
+    for (auto& pair : trackIdMap) {
+        if (pair.second == id) {
+            return pair.first;
+        }
+    }
+    return nullptr;
+}
+
 juce::ReferenceCountedObjectPtr<te::AudioTrack> DAWBackend::addTrack()
 {
     if (currentEdit == nullptr) {
@@ -210,7 +229,15 @@ juce::ReferenceCountedObjectPtr<te::AudioTrack> DAWBackend::addTrack()
     auto& trackList = currentEdit->getTrackList();
     auto lastTrack = trackList.objects.size() > 0 ? trackList.objects[trackList.objects.size() - 1] : nullptr;
     auto insertPoint = te::TrackInsertPoint(nullptr, lastTrack);
-    return currentEdit->insertNewAudioTrack(insertPoint, nullptr);
+    auto track = currentEdit->insertNewAudioTrack(insertPoint, nullptr);
+    
+    if (track != nullptr) {
+        // Assign and store track ID
+        int trackId = getTrackId(track);
+        DAWLogger::getInstance().log("Created track with ID: " + std::to_string(trackId));
+    }
+    
+    return track;
 }
 
 void DAWBackend::removeTrack(int index)
@@ -242,6 +269,35 @@ bool DAWBackend::addClipToTrack(int trackIndex, const juce::File& file, double s
     auto position = te::ClipPosition({ startPos, endPos });
     auto clip = track->insertWaveClip(file.getFileNameWithoutExtension(), file, position, false);
     return clip != nullptr;
+}
+
+bool DAWBackend::addClipToTrackById(int trackId, const juce::File& file, double startTime)
+{
+    if (currentEdit == nullptr) {
+        return false;
+    }
+
+    // Find the track by ID
+    auto track = getTrackById(trackId);
+    if (track == nullptr) {
+        DAWLogger::getInstance().log("Error: Track with ID " + std::to_string(trackId) + " not found");
+        return false;
+    }
+
+    auto startPos = tracktion::TimePosition::fromSeconds(startTime);
+    auto endPos = tracktion::TimePosition::fromSeconds(startTime + 60.0);
+    auto position = te::ClipPosition({ startPos, endPos });
+    auto clip = track->insertWaveClip(file.getFileNameWithoutExtension(), file, position, false);
+    
+    if (clip != nullptr) {
+        DAWLogger::getInstance().log("Added clip to track with ID " + std::to_string(trackId) + 
+                                   ", file: " + file.getFullPathName().toStdString() + 
+                                   ", start time: " + std::to_string(startTime));
+        return true;
+    } else {
+        DAWLogger::getInstance().log("Error: Failed to add clip to track with ID " + std::to_string(trackId));
+        return false;
+    }
 }
 
 void DAWBackend::sendOSCResponse(const juce::String& address, const juce::OSCArgument& arg)
@@ -288,14 +344,14 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
             stop();
             sendOSCResponse("/daw/stop/response", juce::OSCArgument(1)); // Send success response
         }
-        else if (message.getAddressPattern() == "/daw/position") {
+        else if (message.getAddressPattern() == "/daw/position/set") {
             if (message.size() == 1 && message[0].isFloat32()) {
                 DAWLogger::getInstance().log("Position command received: " + std::to_string(message[0].getFloat32()));
                 setPosition(message[0].getFloat32());
-                sendOSCResponse("/daw/position/response", juce::OSCArgument(1)); // Send success response
+                sendOSCResponse("/daw/position/set/response", juce::OSCArgument(1)); // Send success response
             } else {
                 DAWLogger::getInstance().log("Error: Invalid position message format");
-                sendOSCResponse("/daw/position/response", juce::OSCArgument(0)); // Send error response
+                sendOSCResponse("/daw/position/set/response", juce::OSCArgument(0)); // Send error response
             }
         }
         else if (message.getAddressPattern() == "/daw/bpm/set") {
@@ -365,7 +421,166 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
                 DAWLogger::getInstance().log("Error: Invalid BPM message format");
                 sendOSCResponse("/daw/bpm/set/response", juce::OSCArgument(0)); // Send error response
             }
-        } else {
+        }
+        else if (message.getAddressPattern() == "/daw/track/add") {
+            DAWLogger::getInstance().log("Add track command received");
+            
+            // Check if a frontend ID was provided
+            int frontendId = -1;
+            if (message.size() >= 1 && message[0].isInt32()) {
+                frontendId = message[0].getInt32();
+                DAWLogger::getInstance().log("Frontend ID provided: " + std::to_string(frontendId));
+            }
+            
+            if (currentEdit != nullptr) {
+                auto track = addTrack();
+                if (track != nullptr) {
+                    // Get the track ID for reference (not the index)
+                    int trackId = getTrackId(track);
+                    
+                    // Store the frontend ID if provided
+                    if (frontendId >= 0) {
+                        frontendIdMap[trackId] = frontendId;
+                        DAWLogger::getInstance().log("Associated frontend ID " + std::to_string(frontendId) + 
+                                                    " with backend ID " + std::to_string(trackId));
+                    }
+                    
+                    DAWLogger::getInstance().log("Track added successfully, Backend ID: " + std::to_string(trackId) + 
+                                                ", Frontend ID: " + std::to_string(frontendId));
+                    
+                    // Create a response with both IDs
+                    juce::OSCMessage response("/daw/track/add/response");
+                    response.addInt32(1); // Success
+                    response.addInt32(trackId); // Backend track ID
+                    response.addInt32(frontendId); // Frontend ID (as provided)
+                    
+                    oscSender.send(response);
+                    DAWLogger::getInstance().log("Sent track add response with backend and frontend IDs");
+                } else {
+                    DAWLogger::getInstance().log("Error: Failed to add track");
+                    sendOSCResponse("/daw/track/add/response", juce::OSCArgument(0)); // Send error response
+                }
+            } else {
+                DAWLogger::getInstance().log("Error: No edit loaded");
+                sendOSCResponse("/daw/track/add/response", juce::OSCArgument(0)); // Send error response
+            }
+        }
+        else if (message.getAddressPattern() == "/daw/track/remove") {
+            if (message.size() >= 1 && message[0].isInt32()) {
+                int trackId = message[0].getInt32();
+                
+                // Check if a frontend ID was also provided
+                int frontendId = -1;
+                if (message.size() >= 2 && message[1].isInt32()) {
+                    frontendId = message[1].getInt32();
+                }
+                
+                DAWLogger::getInstance().log("Remove track command received, Backend ID: " + std::to_string(trackId) + 
+                                          ", Frontend ID: " + std::to_string(frontendId));
+                
+                if (currentEdit != nullptr) {
+                    auto track = getTrackById(trackId);
+                    if (track != nullptr) {
+                        // Remove the track
+                        currentEdit->deleteTrack(track);
+                        // Remove from our ID maps
+                        trackIdMap.erase(track);
+                        frontendIdMap.erase(trackId);
+                        DAWLogger::getInstance().log("Track removed successfully, Backend ID: " + std::to_string(trackId) + 
+                                                   ", Frontend ID: " + std::to_string(frontendId));
+                        
+                        // Create a response with both IDs
+                        juce::OSCMessage response("/daw/track/remove/response");
+                        response.addInt32(1); // Success
+                        response.addInt32(trackId); // Backend track ID
+                        response.addInt32(frontendId); // Frontend ID (as provided)
+                        
+                        oscSender.send(response);
+                        DAWLogger::getInstance().log("Sent track remove response with backend and frontend IDs");
+                    } else {
+                        DAWLogger::getInstance().log("Error: Track with ID " + std::to_string(trackId) + " not found");
+                        sendOSCResponse("/daw/track/remove/response", juce::OSCArgument(0)); // Error
+                    }
+                } else {
+                    DAWLogger::getInstance().log("Error: No edit loaded");
+                    sendOSCResponse("/daw/track/remove/response", juce::OSCArgument(0)); // Error
+                }
+            } else {
+                DAWLogger::getInstance().log("Error: Invalid track remove message format");
+                sendOSCResponse("/daw/track/remove/response", juce::OSCArgument(0)); // Error
+            }
+        }
+        else if (message.getAddressPattern() == "/daw/track/list") {
+            DAWLogger::getInstance().log("List tracks command received");
+            
+            if (currentEdit != nullptr) {
+                auto tracks = getAudioTracks(*currentEdit);
+                
+                // First, create a response with the number of tracks
+                juce::OSCMessage response("/daw/track/list/response");
+                response.addInt32(1); // Success
+                response.addInt32(static_cast<int>(tracks.size())); // Number of tracks
+                
+                DAWLogger::getInstance().log("Sending list of " + std::to_string(tracks.size()) + " tracks");
+                
+                // Then send the response
+                oscSender.send(response);
+                
+                // Now send individual track info messages
+                for (int i = 0; i < tracks.size(); ++i) {
+                    auto track = tracks[i];
+                    int trackId = getTrackId(track);
+                    int associatedFrontendId = getFrontendId(trackId);
+                    
+                    juce::OSCMessage trackInfo("/daw/track/info");
+                    trackInfo.addInt32(trackId); // Track ID
+                    trackInfo.addInt32(i); // Track index (position)
+                    trackInfo.addString(track->getName()); // Track name
+                    trackInfo.addInt32(associatedFrontendId); // Frontend ID (-1 if not associated)
+                    
+                    oscSender.send(trackInfo);
+                    
+                    DAWLogger::getInstance().log("Track info - Backend ID: " + std::to_string(trackId) + 
+                                               ", Index: " + std::to_string(i) + 
+                                               ", Name: " + track->getName().toStdString() + 
+                                               ", Frontend ID: " + std::to_string(associatedFrontendId));
+                }
+            } else {
+                DAWLogger::getInstance().log("Error: No edit loaded");
+                sendOSCResponse("/daw/track/list/response", juce::OSCArgument(0)); // Error
+            }
+        }
+        else if (message.getAddressPattern() == "/daw/clip/add") {
+            if (message.size() >= 3 && message[0].isInt32() && message[1].isString() && message[2].isFloat32()) {
+                int trackId = message[0].getInt32();
+                juce::String filePath = message[1].getString();
+                float startTime = message[2].getFloat32();
+                
+                DAWLogger::getInstance().log("Add clip command received - Track ID: " + std::to_string(trackId) + 
+                                           ", File: " + filePath.toStdString() + 
+                                           ", Start time: " + std::to_string(startTime));
+                
+                juce::File file(filePath);
+                if (!file.existsAsFile()) {
+                    DAWLogger::getInstance().log("Error: File not found: " + filePath.toStdString());
+                    sendOSCResponse("/daw/clip/add/response", juce::OSCArgument(0)); // Error
+                    return;
+                }
+                
+                bool success = addClipToTrackById(trackId, file, startTime);
+                if (success) {
+                    DAWLogger::getInstance().log("Clip added successfully");
+                    sendOSCResponse("/daw/clip/add/response", juce::OSCArgument(1)); // Success
+                } else {
+                    DAWLogger::getInstance().log("Error: Failed to add clip");
+                    sendOSCResponse("/daw/clip/add/response", juce::OSCArgument(0)); // Error
+                }
+            } else {
+                DAWLogger::getInstance().log("Error: Invalid add clip message format - Expected trackId, filePath, startTime");
+                sendOSCResponse("/daw/clip/add/response", juce::OSCArgument(0)); // Error
+            }
+        }
+        else {
             DAWLogger::getInstance().log("Warning: Unknown OSC message pattern: " + message.getAddressPattern().toString().toStdString());
         }
         

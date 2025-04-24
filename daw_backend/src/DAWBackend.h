@@ -6,7 +6,7 @@
 namespace te = tracktion::engine;
 
 class DAWBackend : public juce::OSCReceiver::Listener<juce::OSCReceiver::MessageLoopCallback>,
-                  public juce::ChangeListener,
+                  public juce::ChangeListener,`
                   public juce::Timer
 {
 public:
@@ -28,6 +28,7 @@ public:
     juce::ReferenceCountedObjectPtr<te::AudioTrack> addTrack();
     void removeTrack(int index);
     bool addClipToTrack(int trackIndex, const juce::File& file, double startTime);
+    bool addClipToTrackById(int trackId, const juce::File& file, double startTime);
 
     // OSC message handling
     void oscMessageReceived(const juce::OSCMessage& message) override;
@@ -49,6 +50,14 @@ private:
     double lastSentTimePosition = -1.0;
     double lastSentBeatPosition = -1.0;
     double lastSentBPM = -1.0;
+
+    // Track ID management
+    int nextTrackId = 1;
+    std::map<juce::ReferenceCountedObjectPtr<te::AudioTrack>, int> trackIdMap;
+    std::map<int, int> frontendIdMap; // Maps backend track IDs to frontend IDs
+    int getTrackId(juce::ReferenceCountedObjectPtr<te::AudioTrack> track);
+    juce::ReferenceCountedObjectPtr<te::AudioTrack> getTrackById(int id);
+    int getFrontendId(int backendId) { return frontendIdMap.count(backendId) ? frontendIdMap[backendId] : -1; }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DAWBackend)
 }; 
