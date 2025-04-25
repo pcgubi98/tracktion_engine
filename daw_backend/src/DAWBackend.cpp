@@ -475,18 +475,44 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
             }
         }
         else if (message.getAddressPattern() == "/daw/track/remove") {
+            int trackId = -1;
+            juce::String frontendId;
+            bool validRequest = false;
+            
+            // Handle case 1: Backend track ID as integer
             if (message.size() >= 1 && message[0].isInt32()) {
-                int trackId = message[0].getInt32();
+                trackId = message[0].getInt32();
+                validRequest = true;
                 
                 // Check if a frontend ID was also provided
-                juce::String frontendId;
                 if (message.size() >= 2 && message[1].isString()) {
                     frontendId = message[1].getString();
                 }
                 
                 DAWLogger::getInstance().log("Remove track command received, Backend ID: " + std::to_string(trackId) + 
                                           ", Frontend ID: " + frontendId.toStdString());
+            }
+            // Handle case 2: Frontend ID as string
+            else if (message.size() >= 1 && message[0].isString()) {
+                frontendId = message[0].getString();
+                DAWLogger::getInstance().log("Remove track command received with Frontend ID: " + frontendId.toStdString());
                 
+                // Look up the backend track ID corresponding to this frontend ID
+                for (const auto& pair : frontendIdMap) {
+                    if (pair.second == frontendId) {
+                        trackId = pair.first;
+                        validRequest = true;
+                        DAWLogger::getInstance().log("Found matching Backend ID: " + std::to_string(trackId));
+                        break;
+                    }
+                }
+                
+                if (!validRequest) {
+                    DAWLogger::getInstance().log("Error: No backend track ID found for frontend ID: " + frontendId.toStdString());
+                }
+            }
+            
+            if (validRequest) {
                 if (currentEdit != nullptr) {
                     auto track = getTrackById(trackId);
                     if (track != nullptr) {
@@ -542,10 +568,10 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
                     juce::String associatedFrontendId = getFrontendId(trackId);
                     
                     juce::OSCMessage trackInfo("/daw/track/info");
-                    trackInfo.addInt32(trackId); // Track ID
-                    trackInfo.addInt32(i); // Track index (position)
-                    trackInfo.addString(track->getName()); // Track name
-                    trackInfo.addString(associatedFrontendId); // Frontend ID (empty string if not associated)
+                    trackInfo.addString("backend_track_id: " + juce::String(trackId)); // Track ID
+                    trackInfo.addString("track_index: " + juce::String(i)); // Track index (position)
+                    trackInfo.addString("track_name: " + track->getName()); // Track name
+                    trackInfo.addString("frontend_id: " + associatedFrontendId); // Frontend ID (empty string if not associated)
                     
                     oscSender.send(trackInfo);
                     
