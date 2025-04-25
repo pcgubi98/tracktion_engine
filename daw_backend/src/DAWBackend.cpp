@@ -304,6 +304,149 @@ bool DAWBackend::addClipToTrackById(int trackId, const juce::File& file, double 
     }
 }
 
+bool DAWBackend::addMidiClipToTrackById(int trackId, const juce::String& name, double startTime, double endTime, int& outClipId)
+{
+    if (currentEdit == nullptr) {
+        return false;
+    }
+
+    // Find the track by ID
+    auto track = getTrackById(trackId);
+    if (track == nullptr) {
+        DAWLogger::getInstance().log("Error: Track with ID " + std::to_string(trackId) + " not found");
+        return false;
+    }
+
+    auto startPos = tracktion::TimePosition::fromSeconds(startTime);
+    auto endPos = tracktion::TimePosition::fromSeconds(endTime);
+    auto timeRange = tracktion::TimeRange(startPos, endPos);
+    
+    auto midiClip = track->insertMIDIClip(name, timeRange, nullptr);
+    
+    if (midiClip != nullptr) {
+        // Generate a unique clip ID and store it in the map
+        static int nextMidiClipId = 1;
+        int clipId = nextMidiClipId++;
+        midiClipIdMap[clipId] = midiClip;
+        outClipId = clipId;
+        
+        DAWLogger::getInstance().log("Added MIDI clip to track with ID " + std::to_string(trackId) + 
+                                   ", clip ID: " + std::to_string(clipId) +
+                                   ", name: " + name.toStdString() + 
+                                   ", start time: " + std::to_string(startTime) +
+                                   ", end time: " + std::to_string(endTime));
+        return true;
+    } else {
+        DAWLogger::getInstance().log("Error: Failed to add MIDI clip to track with ID " + std::to_string(trackId));
+        return false;
+    }
+}
+
+juce::ReferenceCountedObjectPtr<te::MidiClip> DAWBackend::getMidiClipById(int clipId)
+{
+    auto it = midiClipIdMap.find(clipId);
+    if (it != midiClipIdMap.end()) {
+        return it->second;
+    }
+    return nullptr;
+}
+
+bool DAWBackend::addNoteToMidiClip(int clipId, int noteNumber, float velocity, double startTimeBeats, double lengthInBeats)
+{
+    auto midiClip = getMidiClipById(clipId);
+    if (midiClip == nullptr) {
+        DAWLogger::getInstance().log("Error: MIDI clip with ID " + std::to_string(clipId) + " not found");
+        return false;
+    }
+    
+    try {
+        // Get the sequence from the clip
+        auto& sequence = midiClip->getSequence();
+        
+        // Create a MIDI note
+        auto& undoManager = midiClip->edit.getUndoManager();
+        auto startBeat = tracktion::BeatPosition::fromBeats(startTimeBeats);
+        auto endBeat = tracktion::BeatPosition::fromBeats(startTimeBeats + lengthInBeats);
+        
+        // Add the note to the sequence
+        auto note = sequence.addNote(noteNumber, startBeat, endBeat, 
+                                     sequence.getMidiChannel(), 
+                                     velocity, 
+                                     &undoManager);
+        
+        if (note != nullptr) {
+            DAWLogger::getInstance().log("Added note to MIDI clip " + std::to_string(clipId) + 
+                                       ", note: " + std::to_string(noteNumber) + 
+                                       ", velocity: " + std::to_string(velocity) + 
+                                       ", start: " + std::to_string(startTimeBeats) + 
+                                       ", length: " + std::to_string(lengthInBeats));
+            return true;
+        } else {
+            DAWLogger::getInstance().log("Error: Failed to add note to MIDI clip " + std::to_string(clipId));
+            return false;
+        }
+    } catch (const std::exception& e) {
+        DAWLogger::getInstance().log("Exception adding note to MIDI clip: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool DAWBackend::addNotesToMidiClip(int clipId, const std::vector<int>& noteNumbers, const std::vector<float>& velocities, 
+                                  const std::vector<double>& startTimesBeats, const std::vector<double>& lengthsInBeats)
+{
+    auto midiClip = getMidiClipById(clipId);
+    if (midiClip == nullptr) {
+        DAWLogger::getInstance().log("Error: MIDI clip with ID " + std::to_string(clipId) + " not found");
+        return false;
+    }
+    
+    // Check that all arrays have the same size
+    size_t numNotes = noteNumbers.size();
+    if (velocities.size() != numNotes || startTimesBeats.size() != numNotes || lengthsInBeats.size() != numNotes) {
+        DAWLogger::getInstance().log("Error: Arrays for bulk note addition must have the same size");
+        return false;
+    }
+    
+    if (numNotes == 0) {
+        DAWLogger::getInstance().log("Warning: No notes to add");
+        return true;
+    }
+    
+    try {
+        // Get the sequence from the clip
+        auto& sequence = midiClip->getSequence();
+        auto& undoManager = midiClip->edit.getUndoManager();
+        
+        int successCount = 0;
+        
+        // Start a single undo transaction for all notes
+        undoManager.beginNewTransaction("Add multiple MIDI notes");
+        
+        // Add all notes
+        for (size_t i = 0; i < numNotes; ++i) {
+            auto startBeat = tracktion::BeatPosition::fromBeats(startTimesBeats[i]);
+            auto endBeat = tracktion::BeatPosition::fromBeats(startTimesBeats[i] + lengthsInBeats[i]);
+            
+            auto note = sequence.addNote(noteNumbers[i], startBeat, endBeat, 
+                                         sequence.getMidiChannel(), 
+                                         velocities[i], 
+                                         &undoManager);
+            
+            if (note != nullptr) {
+                successCount++;
+            }
+        }
+        
+        DAWLogger::getInstance().log("Added " + std::to_string(successCount) + " of " + 
+                                   std::to_string(numNotes) + " notes to MIDI clip " + std::to_string(clipId));
+        
+        return successCount > 0;
+    } catch (const std::exception& e) {
+        DAWLogger::getInstance().log("Exception adding bulk notes to MIDI clip: " + std::string(e.what()));
+        return false;
+    }
+}
+
 void DAWBackend::sendOSCResponse(const juce::String& address, const juce::OSCArgument& arg)
 {
     oscSender.send(address, arg);
@@ -625,6 +768,132 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
             } else {
                 DAWLogger::getInstance().log("Error: Invalid add clip message format - Expected trackId, filePath, startTime");
                 sendOSCResponse("/daw/clip/add/response", juce::OSCArgument(0)); // Error
+            }
+        }
+        else if (message.getAddressPattern() == "/daw/midi/add") {
+            if (message.size() >= 4 && message[0].isInt32() && message[1].isString() && 
+                message[2].isFloat32() && message[3].isFloat32()) {
+                int trackId = message[0].getInt32();
+                juce::String clipName = message[1].getString();
+                float startTime = message[2].getFloat32();
+                float endTime = message[3].getFloat32();
+                
+                DAWLogger::getInstance().log("Add MIDI clip command received - Track ID: " + std::to_string(trackId) + 
+                                           ", Name: " + clipName.toStdString() + 
+                                           ", Start time: " + std::to_string(startTime) +
+                                           ", End time: " + std::to_string(endTime));
+                
+                int clipId = -1;
+                bool success = addMidiClipToTrackById(trackId, clipName, startTime, endTime, clipId);
+                if (success) {
+                    DAWLogger::getInstance().log("MIDI clip added successfully with ID: " + std::to_string(clipId));
+                    
+                    // Create a response with the clipId
+                    juce::OSCMessage response("/daw/midi/add/response");
+                    response.addInt32(1); // Success
+                    response.addInt32(clipId); // Clip ID
+                    oscSender.send(response);
+                } else {
+                    DAWLogger::getInstance().log("Error: Failed to add MIDI clip");
+                    sendOSCResponse("/daw/midi/add/response", juce::OSCArgument(0)); // Error
+                }
+            } else {
+                DAWLogger::getInstance().log("Error: Invalid add MIDI clip message format - Expected trackId, clipName, startTime, endTime");
+                sendOSCResponse("/daw/midi/add/response", juce::OSCArgument(0)); // Error
+            }
+        }
+        else if (message.getAddressPattern() == "/daw/midi/note/add") {
+            if (message.size() >= 5 && message[0].isInt32() && message[1].isInt32() && 
+                message[2].isFloat32() && message[3].isFloat32() && message[4].isFloat32()) {
+                int clipId = message[0].getInt32();
+                int noteNumber = message[1].getInt32();
+                float velocity = message[2].getFloat32();
+                float startTimeBeats = message[3].getFloat32();
+                float lengthInBeats = message[4].getFloat32();
+                
+                DAWLogger::getInstance().log("Add MIDI note command received - Clip ID: " + std::to_string(clipId) + 
+                                           ", Note: " + std::to_string(noteNumber) + 
+                                           ", Velocity: " + std::to_string(velocity) + 
+                                           ", Start beats: " + std::to_string(startTimeBeats) +
+                                           ", Length beats: " + std::to_string(lengthInBeats));
+                
+                bool success = addNoteToMidiClip(clipId, noteNumber, velocity, startTimeBeats, lengthInBeats);
+                if (success) {
+                    DAWLogger::getInstance().log("MIDI note added successfully");
+                    sendOSCResponse("/daw/midi/note/add/response", juce::OSCArgument(1)); // Success
+                } else {
+                    DAWLogger::getInstance().log("Error: Failed to add MIDI note");
+                    sendOSCResponse("/daw/midi/note/add/response", juce::OSCArgument(0)); // Error
+                }
+            } else {
+                DAWLogger::getInstance().log("Error: Invalid add MIDI note message format - Expected clipId, noteNumber, velocity, startTimeBeats, lengthInBeats");
+                sendOSCResponse("/daw/midi/note/add/response", juce::OSCArgument(0)); // Error
+            }
+        }
+        else if (message.getAddressPattern() == "/daw/midi/notes/add") {
+            // Parse the message - first argument is clipId, then arrays of note data
+            if (message.size() >= 2 && message[0].isInt32()) {
+                int clipId = message[0].getInt32();
+                
+                // The rest of the message should be arrays of note data
+                std::vector<int> noteNumbers;
+                std::vector<float> velocities;
+                std::vector<double> startTimesBeats;
+                std::vector<double> lengthsInBeats;
+                
+                bool validFormat = false;
+                
+                // Parse the message format - depends on how the arrays are sent via OSC
+                if (message.size() >= 5 && message[1].isArray() && message[2].isArray() && 
+                    message[3].isArray() && message[4].isArray()) {
+                    // Format 1: Arrays of data as separate arguments
+                    // TODO: Implement parsing of OSC arrays based on your OSC library's capabilities
+                    // This is a placeholder since the exact format will depend on how your OSC library handles arrays
+                    DAWLogger::getInstance().log("OSC array format for notes not implemented");
+                    validFormat = false;
+                } else {
+                    // Format 2: Interleaved values [note, vel, start, length, note, vel, start, length, ...]
+                    if ((message.size() - 1) % 4 == 0) {
+                        int numNotes = (message.size() - 1) / 4;
+                        
+                        for (int i = 0; i < numNotes; i++) {
+                            int baseIdx = 1 + (i * 4);
+                            
+                            if (message[baseIdx].isInt32() && message[baseIdx+1].isFloat32() && 
+                                message[baseIdx+2].isFloat32() && message[baseIdx+3].isFloat32()) {
+                                
+                                noteNumbers.push_back(message[baseIdx].getInt32());
+                                velocities.push_back(message[baseIdx+1].getFloat32());
+                                startTimesBeats.push_back(message[baseIdx+2].getFloat32());
+                                lengthsInBeats.push_back(message[baseIdx+3].getFloat32());
+                            } else {
+                                validFormat = false;
+                                break;
+                            }
+                        }
+                        validFormat = true;
+                    }
+                }
+                
+                if (validFormat) {
+                    DAWLogger::getInstance().log("Add bulk MIDI notes command received - Clip ID: " + std::to_string(clipId) + 
+                                               ", Note count: " + std::to_string(noteNumbers.size()));
+                    
+                    bool success = addNotesToMidiClip(clipId, noteNumbers, velocities, startTimesBeats, lengthsInBeats);
+                    if (success) {
+                        DAWLogger::getInstance().log("Bulk MIDI notes added successfully");
+                        sendOSCResponse("/daw/midi/notes/add/response", juce::OSCArgument(1)); // Success
+                    } else {
+                        DAWLogger::getInstance().log("Error: Failed to add bulk MIDI notes");
+                        sendOSCResponse("/daw/midi/notes/add/response", juce::OSCArgument(0)); // Error
+                    }
+                } else {
+                    DAWLogger::getInstance().log("Error: Invalid format for bulk MIDI notes");
+                    sendOSCResponse("/daw/midi/notes/add/response", juce::OSCArgument(0)); // Error
+                }
+            } else {
+                DAWLogger::getInstance().log("Error: Invalid add bulk MIDI notes message format");
+                sendOSCResponse("/daw/midi/notes/add/response", juce::OSCArgument(0)); // Error
             }
         }
         else {

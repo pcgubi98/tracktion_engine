@@ -37,11 +37,19 @@ public:
     void removeTrack(int index);
     bool addClipToTrack(int trackIndex, const juce::File& file, double startTime);
     bool addClipToTrackById(int trackId, const juce::File& file, double startTime);
+    bool addMidiClipToTrackById(int trackId, const juce::String& name, double startTime, double endTime, int& outClipId);
 
     // OSC message handling
     void oscMessageReceived(const juce::OSCMessage& message) override;
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
     void timerCallback() override;
+
+    // New function declarations
+    juce::ReferenceCountedObjectPtr<te::MidiClip> getMidiClipById(int clipId);
+    bool addNoteToMidiClip(int clipId, int noteNumber, float velocity, double startTimeBeats, double lengthInBeats);
+    bool addNotesToMidiClip(int clipId, const std::vector<int>& noteNumbers, const std::vector<float>& velocities, 
+                           const std::vector<double>& startTimesBeats, const std::vector<double>& lengthsInBeats);
+    std::unordered_map<int, juce::ReferenceCountedObjectPtr<te::MidiClip>> midiClipIdMap;
 
 private:
     te::Engine engine;
