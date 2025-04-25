@@ -350,9 +350,21 @@ void DAWBackend::oscMessageReceived(const juce::OSCMessage& message)
         }
         else if (message.getAddressPattern() == "/daw/position/set") {
             if (message.size() == 1 && message[0].isFloat32()) {
-                DAWLogger::getInstance().log("Position command received: " + std::to_string(message[0].getFloat32()));
-                setPosition(message[0].getFloat32());
-                sendOSCResponse("/daw/position/set/response", juce::OSCArgument(1)); // Send success response
+                float positionInBeats = message[0].getFloat32();
+                DAWLogger::getInstance().log("Position command received: " + std::to_string(positionInBeats) + " beats");
+                
+                if (currentEdit != nullptr) {
+                    // Convert from beats to time position
+                    auto timePosition = currentEdit->tempoSequence.toTime(tracktion::BeatPosition::fromBeats(positionInBeats));
+                    
+                    // Set the position using the converted time
+                    currentEdit->getTransport().setPosition(timePosition);
+                    DAWLogger::getInstance().log("Set position to: " + std::to_string(timePosition.inSeconds()) + " seconds (converted from " + std::to_string(positionInBeats) + " beats)");
+                    sendOSCResponse("/daw/position/set/response", juce::OSCArgument(1)); // Send success response
+                } else {
+                    DAWLogger::getInstance().log("Error: Cannot set position - no edit loaded");
+                    sendOSCResponse("/daw/position/set/response", juce::OSCArgument(0)); // Send error response
+                }
             } else {
                 DAWLogger::getInstance().log("Error: Invalid position message format");
                 sendOSCResponse("/daw/position/set/response", juce::OSCArgument(0)); // Send error response
